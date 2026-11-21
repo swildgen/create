@@ -55,6 +55,7 @@ WINDOW = 8  # reads kept in flight per phone
 READ_TIMEOUT = 120  # seconds without data before a phone is considered stalled
 LEDGER_NAME = ".offload-ledger.json"
 GB = 1000**3
+VERIFY_MODES = ("size", "readback", "device")
 
 console = Console(highlight=False)
 
@@ -71,6 +72,8 @@ class Config:
     source_dir: str = "/Documents/Media"
     include_proxies: bool = True
     extensions: tuple[str, ...] = (".mov", ".mp4", ".m4v", ".braw")
+    verify: str = "readback"
+    cameras_raw: dict[str, str] = field(default_factory=dict)  # keys as written in config.toml
 
 
 def norm(s: str) -> str:
@@ -92,13 +95,46 @@ def load_config(path: Path, dest_override: Optional[str]) -> Config:
     if not destination:
         sys.exit(f"`destination` is not set in {path} (or pass --dest).")
     cfg = Config(destination=Path(destination).expanduser())
-    cfg.cameras = {norm(k): str(v) for k, v in raw.get("cameras", {}).items()}
+    cfg.cameras_raw = {str(k): str(v) for k, v in raw.get("cameras", {}).items()}
+    cfg.cameras = {norm(k): v for k, v in cfg.cameras_raw.items()}
+    if raw.get("verify") in VERIFY_MODES:
+        cfg.verify = raw["verify"]
     for key in ("app_name_match", "bundle_id", "source_dir", "include_proxies"):
         if key in raw:
             setattr(cfg, key, raw[key])
     if "extensions" in raw:
         cfg.extensions = tuple(e.lower() if e.startswith(".") else f".{e.lower()}" for e in raw["extensions"])
     return cfg
+
+
+def save_config(path: Path, cfg: Config) -> None:
+    """Write config.toml back out (used by the app when presets are changed)."""
+    q = json.dumps  # JSON strings are valid TOML basic strings
+    dest = str(cfg.destination)
+    home = str(Path.home())
+    if dest.startswith(home + "/"):
+        dest = "~" + dest[len(home) :]
+    default = Config(destination=cfg.destination)
+    lines = [
+        "# Episode folders are created inside this folder: <destination>/Ep05/CamA/...",
+        f"destination = {q(dest, ensure_ascii=False)}",
+        "",
+        "# size | readback | device  (see README: Verification)",
+        f"verify = {q(cfg.verify)}",
+        "",
+        "# Also copy Media/Proxy/* into CamX/Proxy/",
+        f"include_proxies = {'true' if cfg.include_proxies else 'false'}",
+    ]
+    if cfg.extensions != default.extensions:
+        lines.append(f"extensions = [{', '.join(q(e) for e in cfg.extensions)}]")
+    for key in ("source_dir", "app_name_match", "bundle_id"):
+        if getattr(cfg, key) != getattr(default, key):
+            lines.append(f"{key} = {q(getattr(cfg, key), ensure_ascii=False)}")
+    lines += ["", "# Map each phone (UDID or device name) to a camera folder.", "[cameras]"]
+    lines += [f"{q(k, ensure_ascii=False)} = {q(v, ensure_ascii=False)}" for k, v in cfg.cameras_raw.items()]
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    os.replace(tmp, path)
 
 
 def safe_name(s: str) -> str:
@@ -151,6 +187,24 @@ class Ledger:
         os.replace(tmp, self.path)
 
 
+@contextlib.contextmanager
+def destination_lock(dest: Path):
+    """Allow only one offload (app or command line) into a destination at a time."""
+    import fcntl
+
+    dest.mkdir(parents=True, exist_ok=True)
+    f = open(dest / ".offload.lock", "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        raise RuntimeError("Another offload into this destination is already running. Wait for it to finish.") from None
+    try:
+        yield
+    finally:
+        f.close()
+
+
 # ----------------------------------------------------------------------------- model
 
 
@@ -176,6 +230,8 @@ class Phone:
     skipped: list[tuple[Clip, str]] = field(default_factory=list)
     ignored: int = 0  # non-video files left alone
     lockdown: Any = None
+    clips: list[Clip] = field(default_factory=list)  # everything found at the last scan
+    progress_task: Any = None
 
 
 @dataclass
@@ -345,8 +401,8 @@ async def scan_phone(phone: Phone, cfg: Config, ledger: Ledger, episode_dir: Pat
         return
     try:
         async with phone.open_afc() as afc:
-            clips, phone.ignored = await scan_clips(afc, cfg)
-        classify(phone, clips, ledger, episode_dir, args)
+            phone.clips, phone.ignored = await scan_clips(afc, cfg)
+        classify(phone, phone.clips, ledger, episode_dir, args)
     except Exception as e:  # noqa: BLE001
         phone.error = explain(e)
 
@@ -475,7 +531,8 @@ def make_progress() -> Progress:
 async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: Ledger, args, progress: Progress, total_task) -> list[Result]:
     results: list[Result] = []
     todo = list(phone.new)
-    task = progress.add_task(f"[bold]{phone.cam}[/] waiting", total=sum(c.size for c in todo))
+    task = phone.progress_task = progress.add_task(f"[bold]{phone.cam}[/] waiting", total=sum(c.size for c in todo))
+    notify = getattr(progress, "clip_event", lambda *a: None)  # front ends get (phone, clip, status, detail)
 
     def advance(n: int) -> None:
         progress.advance(task, n)
@@ -485,6 +542,7 @@ async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: L
     def fail_rest(start: int, why: str) -> None:
         for clip in todo[start:]:
             results.append(Result(phone, clip, False, why))
+            notify(phone, clip, "failed", why)
             advance(clip.size)
 
     try:
@@ -492,6 +550,7 @@ async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: L
             for i, clip in enumerate(todo):
                 label = f"[bold]{phone.cam}[/] {clip.rel} ({i + 1}/{len(todo)})"
                 progress.update(task, description=label)
+                notify(phone, clip, "copying", "")
                 dest = episode_dir / phone.cam / clip.rel
                 done = 0
 
@@ -504,10 +563,14 @@ async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: L
                 try:
                     digest, method, warning = await copy_clip(
                         afc, clip, dest, args.verify, on_bytes,
-                        lambda stage, label=label: progress.update(task, description=f"{label} [dim]{stage}…[/]"),
+                        lambda stage, label=label, clip=clip: (
+                            progress.update(task, description=f"{label} [dim]{stage}…[/]"),
+                            notify(phone, clip, stage, ""),
+                        ),
                     )
                 except Exception as e:  # noqa: BLE001
                     advance(clip.size - done)
+                    notify(phone, clip, "failed", explain(e) if is_connection_error(e) else str(e))
                     if is_connection_error(e):
                         results.append(Result(phone, clip, False, explain(e)))
                         progress.console.print(f"[red]✗ {phone.cam}  {clip.rel}  {explain(e)}[/]")
@@ -520,6 +583,7 @@ async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: L
                 secs = max(time.monotonic() - started, 1e-6)
                 note = {"size": "size verified", "readback": "checksum verified", "device": "checksum verified vs phone"}[method]
                 results.append(Result(phone, clip, True, warning, dest))
+                notify(phone, clip, "done", note + (f" ({warning})" if warning else ""))
                 progress.console.print(
                     f"[green]✓[/] {phone.cam}  {clip.rel}  {clip.size / GB:.2f} GB  {note}  "
                     f"[dim]{clip.size / 1e6 / secs:.0f} MB/s incl. verify[/]"
@@ -536,8 +600,8 @@ async def offload_phone(phone: Phone, episode: str, episode_dir: Path, ledger: L
 # ----------------------------------------------------------------------------- delete
 
 
-async def delete_after_verify(phones: list[Phone], ledger: Ledger) -> None:
-    """Delete from the phones only clips whose verified copy is on disk right now."""
+def deletion_plan(phones: list[Phone], ledger: Ledger) -> list[tuple[Phone, list[Clip]]]:
+    """Per phone, the clips whose verified copy is on disk right now. Nothing else may be deleted."""
     plan: list[tuple[Phone, list[Clip]]] = []
     for phone in phones:
         if phone.error:
@@ -552,18 +616,12 @@ async def delete_after_verify(phones: list[Phone], ledger: Ledger) -> None:
                 eligible.append(clip)
         if eligible:
             plan.append((phone, eligible))
-    if not plan:
-        console.print("\n[yellow]--delete-after-verify: nothing eligible for deletion.[/]")
-        return
-    console.print("\n[bold red]Delete from phones[/] — only clips with a verified copy currently on disk:")
-    for phone, clips in plan:
-        console.print(f"  {phone.cam} ({phone.name}): {len(clips)} clips, {sum(c.size for c in clips) / GB:.1f} GB")
-    if not sys.stdin.isatty():
-        console.print("[red]Refusing to delete without an interactive confirmation.[/]")
-        return
-    if console.input("This cannot be undone. Type [bold]delete[/] to confirm: ").strip() != "delete":
-        console.print("Nothing deleted.")
-        return
+    return plan
+
+
+async def perform_delete(plan: list[tuple[Phone, list[Clip]]]) -> list[tuple[Phone, int, int, list[str]]]:
+    """Delete the planned clips. Returns (phone, removed, planned, errors) per phone."""
+    out = []
     for phone, clips in plan:
         removed, errors = 0, []
         try:
@@ -576,7 +634,27 @@ async def delete_after_verify(phones: list[Phone], ledger: Ledger) -> None:
                         errors.append(f"{clip.rel}: {e}")
         except Exception as e:  # noqa: BLE001
             errors.append(explain(e))
-        console.print(f"  {phone.cam}: deleted {removed}/{len(clips)}" + ("" if not errors else f" [red]({len(errors)} errors)[/]"))
+        out.append((phone, removed, len(clips), errors))
+    return out
+
+
+async def delete_after_verify(phones: list[Phone], ledger: Ledger) -> None:
+    """CLI flow: show the plan, require the typed confirmation, then delete."""
+    plan = deletion_plan(phones, ledger)
+    if not plan:
+        console.print("\n[yellow]--delete-after-verify: nothing eligible for deletion.[/]")
+        return
+    console.print("\n[bold red]Delete from phones[/] — only clips with a verified copy currently on disk:")
+    for phone, clips in plan:
+        console.print(f"  {phone.cam} ({phone.name}): {len(clips)} clips, {sum(c.size for c in clips) / GB:.1f} GB")
+    if not sys.stdin.isatty():
+        console.print("[red]Refusing to delete without an interactive confirmation.[/]")
+        return
+    if console.input("This cannot be undone. Type [bold]delete[/] to confirm: ").strip() != "delete":
+        console.print("Nothing deleted.")
+        return
+    for phone, removed, planned, errors in await perform_delete(plan):
+        console.print(f"  {phone.cam}: deleted {removed}/{planned}" + ("" if not errors else f" [red]({len(errors)} errors)[/]"))
         for err in errors:
             console.print(f"    [red]{err}[/]")
 
@@ -637,8 +715,8 @@ def parse_args(argv=None):
     ap.add_argument("--episode", "-e", help="episode folder name (default: prompt, falling back to today's date)")
     ap.add_argument("--dry-run", "-n", action="store_true", help="list what would be copied and the total size; copy nothing")
     ap.add_argument("--list-devices", action="store_true", help="show connected phones and camera mapping, then exit")
-    ap.add_argument("--verify", choices=("size", "readback", "device"), default="readback",
-                    help="size: size only. readback (default): checksum the data from the phone against the file re-read "
+    ap.add_argument("--verify", choices=VERIFY_MODES, default=None,
+                    help="size: size only. readback (default, or `verify` in config.toml): checksum the data from the phone against the file re-read "
                          "from disk. device: additionally compare with a SHA-1 computed by the phone (slow)")
     ap.add_argument("--delete-after-verify", action="store_true",
                     help="after copying, offer to delete verified clips from the phones (asks for confirmation)")
@@ -709,9 +787,15 @@ async def run(args, cfg: Config, phones: Optional[list[Phone]] = None) -> int:
 
     results: list[Result] = []
     if count:
-        cfg.destination.mkdir(parents=True, exist_ok=True)
+        try:
+            lock = destination_lock(cfg.destination)
+            lock.__enter__()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/]")
+            return 2
         console.print()
-        with make_progress() as progress:
+        with contextlib.closing(contextlib.ExitStack()) as stack, make_progress() as progress:
+            stack.callback(lock.__exit__, None, None, None)
             total_task = progress.add_task("[bold]TOTAL[/]", total=need) if len(usable) > 1 else None
             jobs = [offload_phone(p, episode, episode_dir, ledger, args, progress, total_task) for p in usable if p.new]
             if args.sequential:
@@ -760,6 +844,7 @@ async def run(args, cfg: Config, phones: Optional[list[Phone]] = None) -> int:
 def main() -> None:
     args = parse_args()
     cfg = load_config(Path(args.config), args.dest)
+    args.verify = args.verify or cfg.verify
     try:
         code = asyncio.run(run(args, cfg))
     except KeyboardInterrupt:

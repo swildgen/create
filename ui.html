@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Footage Offload</title>
+<style>
+  :root {
+    --bg: #131314;
+    --raised: #1a1a1c;
+    --field: #202023;
+    --line: #29292c;
+    --line-strong: #38383c;
+    --text: #ececed;
+    --muted: #96969c;
+    --faint: #626268;
+    --active: #f0a23b;
+    --ok: #4cc380;
+    --bad: #f0645c;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 var(--sans); -webkit-font-smoothing: antialiased;
+    display: grid; grid-template-rows: auto 1fr auto; overflow: hidden;
+    user-select: none; -webkit-user-select: none; cursor: default;
+  }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: default; }
+  :focus-visible { outline: 2px solid #5b9cf5; outline-offset: 1px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- top bar: the presets ---------- */
+  header {
+    display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr) auto; gap: 28px;
+    align-items: end; padding: 16px 24px 15px; border-bottom: 1px solid var(--line);
+  }
+  .label { display: block; font-size: 11px; color: var(--faint); letter-spacing: .02em; margin-bottom: 5px; }
+  #episode {
+    width: 100%; background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 9px; font-size: 15px; font-weight: 600; letter-spacing: -.01em;
+    user-select: text; -webkit-user-select: text;
+  }
+  #episode:focus { border-color: var(--line-strong); outline: none; background: #242428; }
+  .dest { min-width: 0; }
+  .dest-row { display: flex; align-items: baseline; gap: 12px; height: 34px; padding-top: 7px; }
+  #dest-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  #dest-free { color: var(--muted); white-space: nowrap; }
+  .link { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; white-space: nowrap; }
+  .link:hover { color: var(--text); }
+  .options { display: flex; align-items: end; gap: 20px; }
+  .seg { display: flex; background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 2px; height: 34px; }
+  .seg button { background: none; border: 0; border-radius: 4px; padding: 0 11px; color: var(--muted); white-space: nowrap; }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: #36363b; color: var(--text); }
+  .check { display: flex; align-items: center; gap: 7px; height: 34px; color: var(--muted); }
+  .check input { appearance: none; width: 14px; height: 14px; border: 1px solid var(--line-strong); border-radius: 3px; margin: 0; background: var(--field); }
+  .check input:checked { background: var(--text) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.2 7.3l2.5 2.5 5-5.6' fill='none' stroke='%23131314' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); border-color: var(--text); }
+  body.locked header { opacity: .45; pointer-events: none; }
+
+  /* ---------- camera lanes ---------- */
+  main { overflow: hidden; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .lane { display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; border-right: 1px solid var(--line); }
+  .lane:last-child { border-right: 0; }
+  .lane-head { padding: 20px 24px 0; }
+  .cam {
+    width: 100%; background: none; border: 0; border-bottom: 1px solid transparent; padding: 0 0 2px; margin-left: -1px;
+    font-size: 26px; font-weight: 650; letter-spacing: -.025em; line-height: 1.15;
+    user-select: text; -webkit-user-select: text;
+  }
+  .cam:hover:not(:disabled) { border-bottom-color: var(--line-strong); }
+  .cam:focus { outline: none; border-bottom-color: var(--muted); }
+  .cam.unnamed { border-bottom: 1px dashed var(--active); }
+  .device { color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint { color: var(--active); }
+  .tally { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-top: 18px; white-space: nowrap; }
+  .tally .right { color: var(--muted); }
+  .bar { height: 2px; background: var(--line); margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--active); transition: width .35s linear; }
+  .bar.done i { background: var(--ok); }
+  .bar.failed i { background: var(--bad); }
+  .clips { overflow-y: auto; padding: 14px 24px 20px; }
+  .group { font-size: 11px; color: var(--faint); letter-spacing: .02em; margin: 14px 0 4px; }
+  .group:first-child { margin-top: 0; }
+  .clip { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 9px; align-items: center; padding: 5px 0; }
+  .clip .name { font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip .size { font-size: 12px; color: var(--muted); }
+  .clip .detail { grid-column: 2 / 4; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip.offloaded .name { color: var(--faint); }
+  .clip.offloaded .size { color: var(--faint); }
+  .clip.failed .detail { color: var(--bad); white-space: normal; }
+  .glyph { width: 14px; height: 14px; display: block; }
+  .spin { animation: spin .9s linear infinite; transform-origin: 50% 50%; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pulse { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .lane.absent .cam { color: var(--faint); }
+  .lane.problem .problem-text { color: var(--bad); margin-top: 18px; line-height: 1.5; white-space: normal; }
+  .quiet { color: var(--faint); padding: 0; margin-top: 18px; line-height: 1.5; }
+
+  .empty { grid-column: 1 / -1; display: grid; place-content: center; text-align: center; gap: 6px; color: var(--muted); }
+  .empty b { color: var(--text); font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+
+  /* ---------- transport bar ---------- */
+  footer { border-top: 1px solid var(--line); background: var(--raised); position: relative; }
+  #total-bar { position: absolute; left: 0; right: 0; top: -1px; height: 2px; }
+  #total-bar i { display: block; height: 100%; width: 0; background: var(--active); transition: width .35s linear; }
+  .transport { display: flex; align-items: center; gap: 20px; padding: 14px 24px; min-height: 68px; }
+  .readout { flex: 1; min-width: 0; }
+  #headline { font-size: 15px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #headline.ok { color: var(--ok); }
+  #headline.bad { color: var(--bad); }
+  #subline { color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn { height: 32px; padding: 0 16px; border-radius: 6px; border: 1px solid var(--line-strong); background: none; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: #26262a; }
+  .btn:disabled { color: var(--faint); border-color: var(--line); }
+  .btn.primary { background: var(--text); border-color: var(--text); color: #131314; font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: #fff; }
+  .btn.primary:disabled { background: #2c2c30; border-color: #2c2c30; color: var(--faint); }
+  .btn.danger { background: var(--bad); border-color: var(--bad); color: #1b0b0a; font-weight: 600; }
+  .btn.danger:disabled { background: #3a2423; border-color: #3a2423; color: #7c5451; }
+  [hidden] { display: none !important; }
+
+  /* ---------- delete sheet ---------- */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; }
+  .sheet { width: 440px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 10px; padding: 24px; box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+  .sheet h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .sheet p { margin: 0 0 16px; color: var(--muted); line-height: 1.5; }
+  .sheet table { width: 100%; border-collapse: collapse; margin-bottom: 18px; }
+  .sheet td { padding: 7px 0; border-top: 1px solid var(--line); }
+  .sheet td:not(:first-child) { text-align: right; color: var(--muted); }
+  .sheet input { width: 100%; background: var(--field); border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px 9px; font-family: var(--mono); user-select: text; -webkit-user-select: text; }
+  .sheet input:focus { outline: none; border-color: var(--muted); }
+  .sheet .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <label class="label" for="episode">Episode</label>
+    <input id="episode" list="episodes" spellcheck="false" autocomplete="off">
+    <datalist id="episodes"></datalist>
+  </div>
+  <div class="dest">
+    <span class="label">Destination</span>
+    <div class="dest-row">
+      <span id="dest-path"></span>
+      <span id="dest-free" class="num"></span>
+      <button class="link" id="dest-change">Change</button>
+    </div>
+  </div>
+  <div class="options">
+    <div>
+      <span class="label">Verify</span>
+      <div class="seg" id="verify">
+        <button data-v="size" title="Check that the byte count on disk matches the phone.">Size</button>
+        <button data-v="readback" title="Also re-read each file from disk and compare a checksum with what the phone sent.">Checksum</button>
+        <button data-v="device" title="Also compare against a checksum computed by the phone itself. Slowest, strongest.">Checksum + phone</button>
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" id="proxies"> Proxies</label>
+  </div>
+</header>
+
+<main id="lanes"></main>
+
+<footer>
+  <div id="total-bar"><i></i></div>
+  <div class="transport">
+    <div class="readout">
+      <div id="headline"></div>
+      <div id="subline" class="num"></div>
+    </div>
+    <button class="link" id="delete-open" hidden>Delete from phones</button>
+    <button class="btn" id="reveal">Show in Finder</button>
+    <button class="btn" id="rescan">Rescan</button>
+    <button class="btn primary" id="go"></button>
+  </div>
+</footer>
+
+<div class="scrim" id="sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h2 id="sheet-title">Delete clips from the phones?</h2>
+    <p>Only clips with a verified copy at the destination right now are listed. This cannot be undone.</p>
+    <table id="sheet-rows"></table>
+    <label class="label" for="sheet-word">Type “delete” to confirm</label>
+    <input id="sheet-word" spellcheck="false" autocomplete="off">
+    <div class="actions">
+      <button class="btn" id="sheet-cancel">Cancel</button>
+      <button class="btn danger" id="sheet-confirm" disabled>Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let state = null, localNotice = "", timer = null;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Token": TOKEN, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return r.json();
+}
+async function post(path, body = {}) { const r = await api(path, body); localNotice = r.error || ""; tick(); return r; }
+
+function size(b) {
+  if (b >= 1e12) return (b / 1e12).toFixed(2) + " TB";
+  if (b >= 1e10) return (b / 1e9).toFixed(1) + " GB";
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
+  return Math.max(b ? 1 : 0, Math.round(b / 1e6)) + " MB";
+}
+const rate = (r) => (r >= 1e9 ? (r / 1e9).toFixed(2) + " GB/s" : Math.round(r / 1e6) + " MB/s");
+function span(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s";
+  return Math.floor(s / 3600) + " h " + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + " min";
+}
+const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+
+const GLYPH = {
+  new: '<svg class="glyph" viewBox="0 0 14 14"><circle cx="7" cy="7" r="3.2" fill="none" stroke="#626268" stroke-width="1.3"/></svg>',
+  copying: '<svg class="glyph spin" viewBox="0 0 14 14"><circle cx="7" cy="7" r="4.6" fill="none" stroke="#3a3a3f" stroke-width="1.6"/><path d="M7 2.4a4.6 4.6 0 0 1 4.6 4.6" fill="none" stroke="#f0a23b" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  verifying: '<svg class="glyph pulse" viewBox="0 0 14 14"><circle cx="7" cy="7" r="3.2" fill="#f0a23b"/></svg>',
+  done: '<svg class="glyph" viewBox="0 0 14 14"><path d="M3 7.4l2.7 2.7 5.3-6" fill="none" stroke="#4cc380" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  offloaded: '<svg class="glyph" viewBox="0 0 14 14"><path d="M3 7.4l2.7 2.7 5.3-6" fill="none" stroke="#626268" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  failed: '<svg class="glyph" viewBox="0 0 14 14"><path d="M4 4l6 6M10 4l-6 6" fill="none" stroke="#f0645c" stroke-width="1.7" stroke-linecap="round"/></svg>',
+};
+
+function clipRow(c) {
+  const detail =
+    c.status === "failed" ? c.detail :
+    c.status === "verifying" ? "Verifying" :
+    c.status === "offloaded" ? c.detail.replace(/^already offloaded → /, "In ").replace(/\/[^/]*$/, "") : "";
+  return `<div class="clip ${c.status}" title="${esc(c.rel)}">${GLYPH[c.status] || GLYPH.new}
+    <span class="name">${esc(c.rel.replace(/^proxy\//i, ""))}</span><span class="size num">${size(c.size)}</span>
+    ${detail ? `<span></span><span class="detail">${esc(detail)}</span>` : ""}</div>`;
+}
+
+function laneBody(p) {
+  const main = p.clips.filter((c) => !c.proxy), prox = p.clips.filter((c) => c.proxy);
+  if (!p.clips.length) return `<div class="quiet">No clips on this phone.</div>`;
+  let h = "";
+  if (main.length) h += `<div class="group">Clips</div>` + main.map(clipRow).join("");
+  if (prox.length) h += `<div class="group">Proxies</div>` + prox.map(clipRow).join("");
+  return h;
+}
+
+function renderLanes(s) {
+  const root = $("lanes");
+  const keys = [...s.phones.map((p) => "p:" + p.udid), ...s.absent.map((c) => "a:" + c)];
+  if (!keys.length) {
+    const msg = s.phase === "scanning"
+      ? `<b>Looking for phones</b><span>&nbsp;</span>`
+      : `<b>No iPhones connected</b><span>Plug the phones in over USB and unlock them. They appear here on their own.</span>`;
+    if (root.dataset.keys !== "empty:" + s.phase) { root.innerHTML = `<div class="empty">${msg}</div>`; root.dataset.keys = "empty:" + s.phase; }
+    return;
+  }
+  if (root.dataset.keys !== keys.join("|")) {
+    root.innerHTML = keys.map((k) => `<section class="lane" data-key="${esc(k)}"><div class="lane-head"></div><div class="clips"></div></section>`).join("");
+    root.dataset.keys = keys.join("|");
+  }
+  const busy = s.phase === "copying" || s.phase === "deleting";
+  s.phones.forEach((p, i) => {
+    const el = root.children[i], head = el.firstChild, body = el.lastChild;
+    el.className = "lane" + (p.error ? " problem" : "");
+    let tally = "", right = "", bar = "", pct = 0, barClass = "";
+    if (p.error) {
+      tally = "";
+    } else if (p.progress) {
+      const g = p.progress, failed = p.clips.some((c) => c.status === "failed");
+      pct = g.total ? (100 * g.done) / g.total : 100;
+      const finished = !p.clips.some((c) => c.status === "copying" || c.status === "verifying") && s.phase !== "copying";
+      barClass = failed ? "failed" : finished ? "done" : "";
+      tally = `${size(g.done)} of ${size(g.total)}`;
+      right = s.phase === "copying" && g.done < g.total ? rate(g.rate) : failed ? "Failed" : finished ? "Verified" : "Verifying";
+    } else {
+      tally = p.new_count ? `${plural(p.new_count, "new clip")} · ${size(p.new_bytes)}` : p.clips.length ? "Nothing new" : "";
+      right = p.skipped_count ? `${p.skipped_count} already offloaded` : "";
+    }
+    const sig = JSON.stringify([p.cam, p.name, p.model, p.mapped, p.error, busy]);
+    if (head.dataset.sig !== sig && !head.contains(document.activeElement)) {
+      head.dataset.sig = sig;
+      head.innerHTML = `
+        <input class="cam${p.mapped ? "" : " unnamed"}" value="${esc(p.mapped ? p.cam : "")}" placeholder="Name this camera" data-udid="${esc(p.udid)}" spellcheck="false" ${busy ? "disabled" : ""} aria-label="Camera name">
+        <div class="device">${esc(p.name)}${p.model ? " · " + esc(p.model.replace(/\s*\(.*\)$/, "")) : ""}</div>
+        ${p.error ? `<div class="problem-text">${esc(p.error)}</div>` : `<div class="tally"><span class="left num"></span><span class="right num"></span></div><div class="bar"><i></i></div>`}`;
+    }
+    if (!p.error && head.querySelector(".tally")) {
+      head.querySelector(".left").textContent = tally;
+      head.querySelector(".right").textContent = right;
+      const b = head.querySelector(".bar"); b.className = "bar " + barClass; b.firstChild.style.width = pct + "%";
+    }
+    const html = p.error ? "" : laneBody(p);
+    if (body.dataset.html !== html) { body.innerHTML = html; body.dataset.html = html; }
+  });
+  s.absent.forEach((cam, j) => {
+    const el = root.children[s.phones.length + j];
+    const html = `<div class="lane-head"><input class="cam" value="${esc(cam)}" disabled><div class="device">Not connected</div><div class="quiet">Plug this phone in over USB and unlock it.</div></div><div class="clips"></div>`;
+    el.className = "lane absent";
+    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+  });
+}
+
+function renderFooter(s) {
+  const head = $("headline"), sub = $("subline"), go = $("go"), sum = s.summary, t = s.total;
+  let h = "", l = "", cls = "", pct = 0;
+  const deletable = s.phones.reduce((n, p) => n + p.deletable, 0);
+  if (s.phase === "copying" && t) {
+    pct = t.total ? (100 * t.done) / t.total : 0;
+    h = `${size(t.done)} of ${size(t.total)}`;
+    l = t.done >= t.total ? "Verifying" : [t.rate ? rate(t.rate) : "", t.eta != null ? span(t.eta) + " left" : "Starting"].filter(Boolean).join(" · ");
+  } else if (s.phase === "deleting") {
+    h = "Deleting from phones";
+  } else if (localNotice || s.notice) {
+    h = localNotice || s.notice; cls = "bad";
+  } else if (sum && sum.deleted != null) {
+    h = sum.ok ? `Deleted ${plural(sum.deleted, "clip")} from the phones` : `Deleted ${plural(sum.deleted, "clip")}, with errors`;
+    cls = sum.ok ? "" : "bad"; l = sum.failures.map((f) => f.detail).join(" · ");
+  } else if (sum) {
+    const how = { size: "size checked", readback: "checksum verified", device: "checksum verified against the phones" }[sum.verify];
+    if (sum.ok) { h = "All files copied and verified"; cls = "ok"; l = `${plural(sum.copied, "clip")} · ${size(sum.copied_bytes)} · ${span(sum.seconds)} · ${how}`; }
+    else if (sum.stopped) { h = "Stopped"; l = `${plural(sum.copied, "clip")} finished. Start again to copy the rest.`; }
+    else { h = `${plural(sum.failures.length, "problem")} — not everything was offloaded`; cls = "bad"; l = `${plural(sum.copied, "clip")} copied and verified. Start again to retry the rest.`; }
+    if (sum.warnings.length) l += ` · ${plural(sum.warnings.length, "warning")}`;
+  } else if (s.phase === "scanning") {
+    h = "Reading phones";
+  } else if (s.need_count) {
+    h = `${plural(s.need_count, "clip")} to copy · ${size(s.need)}`;
+    l = s.need > s.free ? `Not enough space: ${size(s.free)} free` : `Into ${s.episode}`;
+    if (s.need > s.free) cls = "bad";
+  } else if (s.phones.length) {
+    h = "Everything on these phones is already offloaded";
+  }
+  head.textContent = h; head.className = cls; sub.textContent = l;
+  $("total-bar").firstChild.style.width = pct + "%";
+  const copying = s.phase === "copying";
+  go.textContent = copying ? "Stop" : s.need_count ? `Offload ${plural(s.need_count, "clip")}` : "Offload";
+  go.className = "btn" + (copying ? "" : " primary");
+  go.disabled = !copying && (s.phase !== "ready" || !s.need_count || s.need > s.free);
+  $("rescan").hidden = copying; $("rescan").disabled = s.phase !== "ready";
+  $("delete-open").hidden = s.phase !== "ready" || !deletable;
+  $("delete-open").textContent = `Delete ${plural(deletable, "offloaded clip")} from phones`;
+}
+
+function renderHeader(s) {
+  document.body.classList.toggle("locked", s.phase === "copying" || s.phase === "deleting");
+  const ep = $("episode");
+  if (document.activeElement !== ep && ep.value !== s.episode) ep.value = s.episode;
+  const list = s.episodes.map((e) => `<option value="${esc(e)}">`).join("");
+  if ($("episodes").dataset.html !== list) { $("episodes").innerHTML = list; $("episodes").dataset.html = list; }
+  const home = s.config.destination.replace(/^\/Users\/[^/]+/, "~");
+  $("dest-path").textContent = "‎" + home; $("dest-path").title = s.config.destination;
+  $("dest-free").textContent = size(s.free) + " free";
+  for (const b of $("verify").children) b.setAttribute("aria-pressed", b.dataset.v === s.config.verify);
+  $("proxies").checked = s.config.include_proxies;
+}
+
+function renderSheet(s) {
+  const open = s.delete_plan.length > 0 && s.phase === "ready";
+  if (open && $("sheet").hidden) { $("sheet-word").value = ""; $("sheet-confirm").disabled = true; setTimeout(() => $("sheet-word").focus(), 0); }
+  $("sheet").hidden = !open;
+  if (open) $("sheet-rows").innerHTML = s.delete_plan.map((r) =>
+    `<tr><td>${esc(r.cam)}</td><td>${esc(r.name)}</td><td class="num">${plural(r.count, "clip")}</td><td class="num">${size(r.bytes)}</td></tr>`).join("");
+}
+
+async function tick() {
+  clearTimeout(timer);
+  try {
+    state = await api("/api/state");
+    renderHeader(state); renderLanes(state); renderFooter(state); renderSheet(state);
+  } catch (e) { /* the app is closing */ }
+  timer = setTimeout(tick, state && state.phase === "copying" ? 300 : 700);
+}
+
+let epTimer = null;
+$("episode").addEventListener("input", (e) => { clearTimeout(epTimer); epTimer = setTimeout(() => post("/api/episode", { episode: e.target.value }), 250); });
+$("episode").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+$("dest-change").addEventListener("click", () => post("/api/choose-destination"));
+$("verify").addEventListener("click", (e) => { if (e.target.dataset.v) post("/api/config", { verify: e.target.dataset.v }); });
+$("proxies").addEventListener("change", (e) => post("/api/config", { include_proxies: e.target.checked }));
+$("rescan").addEventListener("click", () => post("/api/refresh"));
+$("reveal").addEventListener("click", () => post("/api/reveal"));
+$("go").addEventListener("click", () => post(state.phase === "copying" ? "/api/stop" : "/api/start"));
+$("delete-open").addEventListener("click", () => post("/api/delete-plan"));
+$("sheet-word").addEventListener("input", (e) => { $("sheet-confirm").disabled = e.target.value.trim() !== "delete"; });
+$("sheet-word").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("sheet-confirm").disabled) $("sheet-confirm").click(); if (e.key === "Escape") $("sheet-cancel").click(); });
+$("sheet-cancel").addEventListener("click", () => post("/api/delete", { confirm: "" }));
+$("sheet-confirm").addEventListener("click", () => post("/api/delete", { confirm: $("sheet-word").value.trim() }));
+$("lanes").addEventListener("change", (e) => {
+  if (e.target.classList.contains("cam") && e.target.value.trim())
+    post("/api/config", { camera: { udid: e.target.dataset.udid, name: e.target.value.trim() } });
+});
+$("lanes").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.classList.contains("cam")) e.target.blur(); });
+tick();
+</script>
+</body>
+</html>

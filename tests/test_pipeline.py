@@ -24,8 +24,8 @@ import offload  # noqa: E402
 class FakeAfc:
     """Just enough of pymobiledevice3's AFC client, serving files from a local folder."""
 
-    def __init__(self, root: Path, corrupt: str = "", die_on: str = ""):
-        self.root, self.corrupt, self.die_on = root, corrupt, die_on
+    def __init__(self, root: Path, corrupt: str = "", die_on: str = "", delay: float = 0):
+        self.root, self.corrupt, self.die_on, self.delay = root, corrupt, die_on, delay
         self.handles: dict[int, str] = {}
 
     def _p(self, remote: str) -> Path:
@@ -48,6 +48,8 @@ class FakeAfc:
 
     async def pread(self, handle, size, offset):
         remote = self.handles[handle]
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if self.die_on and self.die_on in remote and offset > 0:
             raise ConnectionResetError("unplugged")
         with open(self._p(remote), "rb") as f:
@@ -86,6 +88,7 @@ def fill(root: Path, files: dict[str, int]) -> None:
 def run(dest: Path, phones, *flags) -> int:
     args = offload.parse_args(["--dest", str(dest), "--config", "/nonexistent", *flags])
     cfg = offload.load_config(Path(args.config), args.dest)
+    args.verify = args.verify or cfg.verify
     return asyncio.run(offload.run(args, cfg, phones))
 
 

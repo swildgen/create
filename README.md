@@ -15,7 +15,30 @@ anything from a phone unless you explicitly ask and confirm.
    line for every phone that isn't mapped yet; paste those under `[cameras]` in
    `config.toml` and change the names to `CamA` / `CamB` / `CamC`.
 
-## Every shoot
+## The app
+
+```bash
+./make_app.sh
+```
+
+builds **Footage Offload.app** in this folder (drag it to the Dock or `/Applications`).
+It opens a window with your presets from `config.toml` already loaded:
+
+- One lane per camera. Phones appear on their own when plugged in; type in a lane's
+  title to name that camera (saved to `config.toml`).
+- Episode name, destination, verification mode and proxies along the top. Changes to the
+  destination, verification and proxies are saved as the new presets.
+- **Offload** copies all phones in parallel with live progress, then reports
+  "All files copied and verified" or lists what failed, per clip.
+- **Delete … from phones** only appears when verified copies exist, lists exactly what
+  would be removed, and needs the word `delete` typed before it does anything.
+
+The app is a front end for `offload.py`: same engine, same ledger, same checks. It points
+at this folder, so re-run `make_app.sh` if you move the folder. Its log is at
+`~/Library/Logs/Footage Offload.log`. `./gui.py --demo` opens it with three simulated
+phones and a temporary destination, to try it without touching real footage.
+
+## Every shoot (command line)
 
 ```bash
 ./offload.py --dry-run            # what would be copied, total size, free space
