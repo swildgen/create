@@ -1,0 +1,18 @@
+# Copy to config.toml and edit.
+
+# Episode folders are created inside this folder: <destination>/Ep05/CamA/...
+destination = "/Volumes/PodcastSSD/Footage"
+
+# Map each phone to a camera folder. Keys are a phone's UDID (most reliable) or its
+# device name. Run `./offload.py --list-devices` to get ready-to-paste lines.
+[cameras]
+# "00008160-0000000000000000" = "CamA"
+# "00008160-0000000000000001" = "CamB"
+# "Studio iPhone 3" = "CamC"
+
+# ---- Optional (top-level keys must go above [cameras]) --------------------------
+# include_proxies = true                 # also copy Media/Proxy/* into CamX/Proxy/
+# extensions = [".mov", ".mp4", ".m4v", ".braw"]
+# source_dir = "/Documents/Media"        # where the app keeps clips
+# app_name_match = "blackmagic"          # how the app is found in the installed-apps list
+# bundle_id = "com.example.override"     # skip the lookup entirely
