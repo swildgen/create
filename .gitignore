@@ -3,5 +3,6 @@ config.toml
 __pycache__/
 .DS_Store
 *.part
-*.app/
 .claude/
+dist/
+build/

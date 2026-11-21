@@ -4,41 +4,47 @@ Copies Blackmagic Camera clips off every iPhone plugged in over USB, into
 `<destination>/<episode>/<CamA|CamB|CamC>/`, verifies each file, and never deletes
 anything from a phone unless you explicitly ask and confirm.
 
-## One-time setup (Mac)
+## The app: Create
 
-1. Install [uv](https://docs.astral.sh/uv/) if you don't have it: `brew install uv`.
-   The script declares its own dependencies, so uv installs them on first run.
-   (Without uv: `pip install -r requirements.txt`, then `python3 offload.py …`.)
-2. Plug each phone in once, unlock it, and tap **Trust This Computer**.
-3. `cp config.example.toml config.toml` and set `destination`.
-4. Plug in all phones and run `./offload.py --list-devices`. It prints a ready-to-paste
-   line for every phone that isn't mapped yet; paste those under `[cameras]` in
-   `config.toml` and change the names to `CamA` / `CamB` / `CamC`.
-
-## The app
-
-```bash
-./make_app.sh
-```
-
-builds **Footage Offload.app** in this folder (drag it to the Dock or `/Applications`).
-It opens a window with your presets from `config.toml` already loaded:
+**Create.app** is the normal way to use this. Install it once (download
+`Create-x.y.z.zip` from the [latest release](https://github.com/swildgen/create/releases/latest),
+unzip, drag to `/Applications`) and it keeps itself up to date.
 
 - One lane per camera. Phones appear on their own when plugged in; type in a lane's
-  title to name that camera (saved to `config.toml`).
-- Episode name, destination, verification mode and proxies along the top. Changes to the
-  destination, verification and proxies are saved as the new presets.
+  title to name that camera.
+- Episode name, destination, verification mode and proxies along the top. These are
+  your presets: they load from `~/.create/config.toml` and changes are saved back.
 - **Offload** copies all phones in parallel with live progress, then reports
   "All files copied and verified" or lists what failed, per clip.
 - **Delete … from phones** only appears when verified copies exist, lists exactly what
   would be removed, and needs the word `delete` typed before it does anything.
 
-The app is a front end for `offload.py`: same engine, same ledger, same checks. It points
-at this folder, so re-run `make_app.sh` if you move the folder. Its log is at
-`~/Library/Logs/Footage Offload.log`. `./gui.py --demo` opens it with three simulated
-phones and a temporary destination, to try it without touching real footage.
+Before first use, plug each phone in once, unlock it and tap **Trust This Computer**.
 
-## Every shoot (command line)
+### Updates
+
+The app checks GitHub for a newer release at launch and every few hours, downloads it in
+the background, verifies its SHA-256, and shows **Restart Now** when it is ready. If you
+ignore that, the update installs when you quit, or at the next launch. It never restarts
+during an offload. The previous version is kept until the new one has started, and is
+put back if it does not. Log: `~/.create/updates/update.log`.
+
+### Shipping a new version
+
+```bash
+./release.sh 1.0.1 "What changed"
+```
+
+builds `dist/Create.app`, zips it, commits, pushes, and publishes a GitHub release.
+Every installed copy then updates itself. `./build.sh` alone just builds the app.
+
+## Command line
+
+The same engine without the window. Needs [uv](https://docs.astral.sh/uv/)
+(`brew install uv`); the script installs its own dependencies on first run. It shares
+`~/.create/config.toml` and the ledger with the app (see `config.example.toml`).
+`./offload.py --list-devices` prints ready-to-paste `[cameras]` lines.
+
 
 ```bash
 ./offload.py --dry-run            # what would be copied, total size, free space
@@ -116,5 +122,6 @@ are left on the phone. It refuses to run without an interactive terminal.
 
 ## Tests
 
-`uv run tests/test_pipeline.py` exercises copy, verify, skip, failure and delete paths
+`./gui.py --demo` opens the window from source with three simulated phones and a
+temporary destination. `uv run tests/test_pipeline.py` exercises copy, verify, skip, failure and delete paths
 against a fake phone (a temp folder); it needs no devices.

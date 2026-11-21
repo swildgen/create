@@ -76,6 +76,16 @@ class Config:
     cameras_raw: dict[str, str] = field(default_factory=dict)  # keys as written in config.toml
 
 
+DATA_DIR = Path.home() / ".create"
+
+
+def default_config_path() -> Path:
+    """~/.create/config.toml (shared with the Create app); a config.toml next to this script wins if
+    that one does not exist yet."""
+    shared, local = DATA_DIR / "config.toml", Path(__file__).resolve().parent / "config.toml"
+    return local if local.exists() and not shared.exists() else shared
+
+
 def norm(s: str) -> str:
     """Normalise a device name / UDID for matching (curly quotes, case, whitespace)."""
     return s.replace("’", "'").replace("‘", "'").strip().casefold()
@@ -89,7 +99,7 @@ def load_config(path: Path, dest_override: Optional[str]) -> Config:
     elif not dest_override:
         sys.exit(
             f"No config file at {path}.\n"
-            "Copy config.example.toml to config.toml and set `destination`, or pass --dest."
+            "Copy config.example.toml there and set `destination`, or pass --dest."
         )
     destination = dest_override or raw.get("destination")
     if not destination:
@@ -132,6 +142,7 @@ def save_config(path: Path, cfg: Config) -> None:
             lines.append(f"{key} = {q(getattr(cfg, key), ensure_ascii=False)}")
     lines += ["", "# Map each phone (UDID or device name) to a camera folder.", "[cameras]"]
     lines += [f"{q(k, ensure_ascii=False)} = {q(v, ensure_ascii=False)}" for k, v in cfg.cameras_raw.items()]
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".toml.tmp")
     tmp.write_text("\n".join(lines) + "\n")
     os.replace(tmp, path)
@@ -725,7 +736,7 @@ def parse_args(argv=None):
     ap.add_argument("--sequential", action="store_true", help="copy one phone at a time instead of all in parallel")
     ap.add_argument("--force", action="store_true", help="continue even if free space looks insufficient")
     ap.add_argument("--dest", help="override the destination folder from config.toml")
-    ap.add_argument("--config", default=str(Path(__file__).resolve().parent / "config.toml"), help="path to config.toml")
+    ap.add_argument("--config", default=str(default_config_path()), help="path to config.toml (default: ~/.create/config.toml)")
     return ap.parse_args(argv)
 
 

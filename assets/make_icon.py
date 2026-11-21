@@ -1,4 +1,4 @@
-"""Render assets/icon.icns: three camera lanes, one mid-transfer. Run: uv run --with pillow assets/make_icon.py"""
+"""Render assets/create.icns: three camera lanes, one mid-transfer. Run: uv run --with pillow assets/make_icon.py"""
 import subprocess, tempfile
 from pathlib import Path
 from PIL import Image, ImageDraw
@@ -25,5 +25,5 @@ with tempfile.TemporaryDirectory() as t:
     for n in (16, 32, 128, 256, 512):
         img.resize((n, n), Image.LANCZOS).save(iconset / f"icon_{n}x{n}.png")
         img.resize((n * 2, n * 2), Image.LANCZOS).save(iconset / f"icon_{n}x{n}@2x.png")
-    subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out / "icon.icns")], check=True)
+    subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out / "create.icns")], check=True)
 img.resize((256, 256), Image.LANCZOS).save(out / "icon-preview.png")

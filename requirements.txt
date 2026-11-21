@@ -1,3 +1,4 @@
 pymobiledevice3>=11.61,<12
 rich>=13
 xxhash>=3
+pywebview>=5

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Footage Offload</title>
+<title>Create</title>
 <style>
   :root {
     --bg: #131314;
@@ -25,7 +25,7 @@
   body {
     background: var(--bg); color: var(--text);
     font: 13px/1.4 var(--sans); -webkit-font-smoothing: antialiased;
-    display: grid; grid-template-rows: auto 1fr auto; overflow: hidden;
+    display: flex; flex-direction: column; overflow: hidden;
     user-select: none; -webkit-user-select: none; cursor: default;
   }
   button, input { font: inherit; color: inherit; }
@@ -62,7 +62,11 @@
   body.locked header { opacity: .45; pointer-events: none; }
 
   /* ---------- camera lanes ---------- */
-  main { overflow: hidden; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  #update { display: flex; align-items: center; justify-content: center; gap: 14px; height: 32px; background: var(--raised); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  #update b { color: var(--text); font-weight: 600; }
+  #update button { height: 22px; padding: 0 10px; border-radius: 5px; border: 1px solid var(--line-strong); background: none; }
+  #update button:hover { background: #26262a; }
+  main { flex: 1; min-height: 0; overflow: hidden; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
   .lane { display: grid; grid-template-rows: auto 1fr; min-width: 0; overflow: hidden; border-right: 1px solid var(--line); }
   .lane:last-child { border-right: 0; }
   .lane-head { padding: 20px 24px 0; }
@@ -138,6 +142,8 @@
 </style>
 </head>
 <body>
+
+<div id="update" hidden><span id="update-text"></span><button id="update-go" hidden>Restart Now</button></div>
 
 <header>
   <div>
@@ -365,6 +371,17 @@ function renderHeader(s) {
   $("proxies").checked = s.config.include_proxies;
 }
 
+function renderUpdate(s) {
+  const u = s.update;
+  $("update").hidden = !u;
+  if (!u) return;
+  const ready = u.status === "ready";
+  $("update-text").innerHTML = ready
+    ? `<b>Create ${esc(u.version)}</b> is ready to install.`
+    : `Downloading Create ${esc(u.version)}${u.pct ? " · " + u.pct + "%" : ""}`;
+  $("update-go").hidden = !ready || s.phase === "copying" || s.phase === "deleting";
+}
+
 function renderSheet(s) {
   const open = s.delete_plan.length > 0 && s.phase === "ready";
   if (open && $("sheet").hidden) { $("sheet-word").value = ""; $("sheet-confirm").disabled = true; setTimeout(() => $("sheet-word").focus(), 0); }
@@ -377,7 +394,7 @@ async function tick() {
   clearTimeout(timer);
   try {
     state = await api("/api/state");
-    renderHeader(state); renderLanes(state); renderFooter(state); renderSheet(state);
+    renderUpdate(state); renderHeader(state); renderLanes(state); renderFooter(state); renderSheet(state);
   } catch (e) { /* the app is closing */ }
   timer = setTimeout(tick, state && state.phase === "copying" ? 300 : 700);
 }
@@ -390,6 +407,7 @@ $("verify").addEventListener("click", (e) => { if (e.target.dataset.v) post("/ap
 $("proxies").addEventListener("change", (e) => post("/api/config", { include_proxies: e.target.checked }));
 $("rescan").addEventListener("click", () => post("/api/refresh"));
 $("reveal").addEventListener("click", () => post("/api/reveal"));
+$("update-go").addEventListener("click", () => post("/api/update-install"));
 $("go").addEventListener("click", () => post(state.phase === "copying" ? "/api/stop" : "/api/start"));
 $("delete-open").addEventListener("click", () => post("/api/delete-plan"));
 $("sheet-word").addEventListener("input", (e) => { $("sheet-confirm").disabled = e.target.value.trim() !== "delete"; });

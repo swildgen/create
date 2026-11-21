@@ -1,4 +1,4 @@
-# Copy to config.toml and edit.
+# Copy to ~/.create/config.toml and edit (the Create app writes this file for you).
 
 # Episode folders are created inside this folder: <destination>/Ep05/CamA/...
 destination = "/Volumes/PodcastSSD/Footage"

@@ -8,9 +8,9 @@
 #     "pywebview>=5",
 # ]
 # ///
-"""Footage Offload — the window front end for offload.py.
+"""Create — the window front end for offload.py. Shipped as Create.app (see build.sh).
 
-    ./gui.py              open the app window
+    ./gui.py              open the app window from source
     ./gui.py --browser    serve the same UI at a local URL instead of opening a window
     ./gui.py --demo       three simulated phones and a temp destination (touches nothing real)
 
@@ -40,11 +40,23 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 HERE = Path(__file__).resolve().parent
+FROZEN = bool(getattr(sys, "frozen", False))  # running inside Create.app
+RES = Path(getattr(sys, "_MEIPASS", HERE))  # where ui.html, VERSION and the icon live
+DATA_DIR = Path.home() / ".create"
+if FROZEN:  # a windowed app has no terminal: send output to a log file
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    sys.stdout = sys.stderr = open(DATA_DIR / "create.log", "a", buffering=1, encoding="utf-8")
 sys.path.insert(0, str(HERE))
 import offload  # noqa: E402
+import updater  # noqa: E402
 from offload import GB  # noqa: E402
 
-APP_NAME = "Footage Offload"
+APP_NAME = "Create"
+UPDATE_CHECK_EVERY = 4 * 3600
+try:
+    VERSION = (RES / "VERSION").read_text(encoding="utf-8").strip()
+except OSError:
+    VERSION = ""
 BUSY = ("copying", "deleting")
 
 
@@ -83,8 +95,8 @@ class App:
             self._setup_demo()
         else:
             if not config_path.exists() and not dest_override:
-                example = HERE / "config.example.toml"
-                config_path.write_text(example.read_text() if example.exists() else 'destination = "~/Movies/Footage"\n')
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text('destination = "~/Movies/Footage"\n')
             self.cfg = offload.load_config(config_path, dest_override)
 
         self.loop = asyncio.new_event_loop()
@@ -103,9 +115,37 @@ class App:
         self.summary: Optional[dict[str, Any]] = None
         self.notice = ""  # one-line problem to show (bad ledger, not enough space, ...)
         self.delete_plan: list[tuple[offload.Phone, list[offload.Clip]]] = []
+        self.update: Optional[dict[str, Any]] = None  # {status: downloading|ready, version, pct}
+        if FROZEN and VERSION:
+            threading.Thread(target=self.update_loop, daemon=True).start()
         self.call(self.refresh(), wait=False)
         if not demo:
             self.call(self.watch(), wait=False)
+
+    # ------------------------------------------------------------------ updates
+
+    def update_loop(self) -> None:
+        """Check, download and stage updates in the background, like Summon does."""
+        while True:
+            try:
+                ready = updater.prepare_update(
+                    VERSION,
+                    progress_cb=lambda _mb, _total, pct: self.update and self.update.update(pct=pct),
+                    on_found=lambda info: setattr(self, "update", {"status": "downloading", "version": info["version"], "pct": 0}),
+                )
+                self.update = {"status": "ready", "version": ready["version"], "pct": 100} if ready else None
+            except Exception as e:  # noqa: BLE001
+                print(f"update check failed: {e}")
+            time.sleep(UPDATE_CHECK_EVERY)
+
+    def install_update(self) -> str:
+        if self.phase in BUSY:
+            return "Finish the offload first, then restart to update."
+        result = updater.install_staged(VERSION, relaunch=True)
+        if not result.get("ok"):
+            return result.get("error", "The update could not be installed.")
+        threading.Timer(0.4, os._exit, args=(0,)).start()  # the swap script waits for us to exit
+        return ""
 
     # ------------------------------------------------------------------ plumbing
 
@@ -419,6 +459,7 @@ class App:
             episodes = sorted(d.name for d in self.cfg.destination.iterdir() if d.is_dir() and not d.name.startswith("."))
         return {
             "phase": self.phase, "demo": self.demo, "notice": self.notice,
+            "version": VERSION, "update": self.update,
             "episode": self.episode, "episodes": episodes,
             "config": {"destination": str(self.cfg.destination), "verify": self.cfg.verify,
                        "include_proxies": self.cfg.include_proxies},
@@ -435,7 +476,7 @@ class App:
 
 
 def make_handler(app: App, token: str):
-    page = (HERE / "ui.html").read_text().replace("__TOKEN__", token)
+    page = (RES / "ui.html").read_text(encoding="utf-8").replace("__TOKEN__", token)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -485,6 +526,8 @@ def make_handler(app: App, token: str):
                     app.call(app.confirm_delete(str(body.get("confirm", ""))), wait=False)
                 case "/api/reveal":
                     app.call(app.reveal())
+                case "/api/update-install":
+                    error = app.install_update()
                 case _:
                     return self.send(404, b"{}")
             self.send(200, json.dumps({"error": error}).encode())
@@ -494,12 +537,19 @@ def make_handler(app: App, token: str):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=f"{APP_NAME} window")
-    ap.add_argument("--config", default=str(HERE / "config.toml"))
+    ap.add_argument("--config", default=str(offload.default_config_path()))
     ap.add_argument("--dest", help="override the destination folder for this session")
     ap.add_argument("--demo", action="store_true", help="simulated phones and a temporary destination")
     ap.add_argument("--browser", action="store_true", help="serve the UI at a local URL instead of opening a window")
     ap.add_argument("--port", type=int, default=0)
     args = ap.parse_args()
+
+    if FROZEN and VERSION:
+        # Tell a waiting installer this version started, then apply any update that was
+        # downloaded during the last session before showing a window.
+        updater.confirm_launch(VERSION)
+        if updater.install_staged(VERSION, relaunch=True).get("ok"):
+            os._exit(0)
 
     app = App(Path(args.config), args.dest, args.demo)
     token = secrets.token_urlsafe(24)
@@ -521,11 +571,13 @@ def main() -> None:
 
         info = NSBundle.mainBundle().localizedInfoDictionary() or NSBundle.mainBundle().infoDictionary()
         info["CFBundleName"] = APP_NAME
-        icon = NSImage.alloc().initWithContentsOfFile_(str(HERE / "assets" / "icon.icns"))
+        icon = NSImage.alloc().initWithContentsOfFile_(str(HERE / "assets" / "create.icns")) if not FROZEN else None
         if icon is not None:
             NSApplication.sharedApplication().setApplicationIconImage_(icon)
     app.window = webview.create_window(APP_NAME, url, width=1180, height=780, min_size=(860, 560), background_color="#131314")
     webview.start()
+    if FROZEN and VERSION and app.phase not in BUSY:
+        updater.install_staged(VERSION, relaunch=False)  # install on quit; next launch is the new version
     os._exit(0)
 
 
